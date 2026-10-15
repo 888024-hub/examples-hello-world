@@ -4,6 +4,7 @@ import {
   MAX_QUNET_FRAME_BYTES,
   QunetTcpFrameDecoder,
 } from "./framing.ts";
+import { parseAllowedTarget } from "./target.ts";
 
 const TOKEN = Deno.env.get("GLOBED_PROXY_TOKEN") ?? "";
 const ALLOWED_HOSTS = new Set(
@@ -50,56 +51,6 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
 
-function decodeHex(value: string): string {
-  if (!value || value.length > 2048 || value.length % 2 !== 0 ||
-      !/^[0-9a-f]+$/i.test(value)) {
-    throw new TypeError("Invalid target_hex");
-  }
-
-  const bytes = new Uint8Array(value.length / 2);
-  for (let i = 0; i < value.length; i += 2) {
-    bytes[i / 2] = Number.parseInt(value.slice(i, i + 2), 16);
-  }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-}
-
-type TcpTarget = { hostname: string; port: number };
-
-function parseAllowedTarget(targetHex: string | null): TcpTarget {
-  if (!targetHex) throw new TypeError("Missing target_hex");
-
-  const original = decodeHex(targetHex);
-  let target: URL;
-
-  try {
-    // Qunet server listings usually provide protocol://host:port.
-    // Add tcp:// for bare host:port addresses; do not allow a URL path/query.
-    target = new URL(original.includes("://") ? original : `tcp://${original}`);
-  } catch {
-    throw new TypeError("Invalid game-server address");
-  }
-
-  if (!["udp:", "tcp:", "quic:", "qunet:"].includes(target.protocol)) {
-    throw new TypeError("Unsupported game-server URL protocol");
-  }
-  if (target.username || target.password || target.pathname !== "/" ||
-      target.search || target.hash || !target.port) {
-    throw new TypeError("Expected a simple host:port game-server address");
-  }
-
-  const hostname = target.hostname.toLowerCase().replace(/\.$/, "");
-  const port = Number(target.port);
-
-  if (!isAllowedHost(hostname)) {
-    throw new TypeError("Game-server host is not allowlisted");
-  }
-  if (!ALLOWED_PORTS.has(port)) {
-    throw new TypeError("Game-server TCP port is not allowlisted");
-  }
-
-  return { hostname, port };
-}
-
 async function bytesFromMessage(data: unknown): Promise<Uint8Array> {
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (ArrayBuffer.isView(data)) {
@@ -142,7 +93,11 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
 
   let target: TcpTarget;
   try {
-    target = parseAllowedTarget(url.searchParams.get("target_hex"));
+    target = parseAllowedTarget(
+      url.searchParams.get("target_hex"),
+      ALLOWED_HOSTS,
+      ALLOWED_PORTS,
+    );
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Invalid target" }, 400);
   }
