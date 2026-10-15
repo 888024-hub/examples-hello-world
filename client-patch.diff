@@ -1,0 +1,44 @@
+# Client-side patch for Globed v2 (against GlobedGD/globed2)
+#
+# This is a patch template, not something the Deno server can apply to the
+# already-installed game client. It must be applied when building a custom
+# Globed client. Set GAME_WS_TCP_BRIDGE_BASE_URL to the deployed URL:
+#   wss://YOUR-DEPLOY-HOST/ws/YOUR-TOKEN
+#
+# The original game-server URL is hex-encoded into target_hex. The Deno bridge
+# validates its hostname/port against GLOBED_ALLOWED_GAME_HOSTS/PORTS.
+
+diff --git a/src/core/net/NetworkManagerImpl.cpp b/src/core/net/NetworkManagerImpl.cpp
+--- a/src/core/net/NetworkManagerImpl.cpp
++++ b/src/core/net/NetworkManagerImpl.cpp
+@@
+ namespace globed {
+ 
++// Set this before building your custom client. Leave it empty to disable
++// the bridge and preserve normal direct game-server connections.
++static constexpr std::string_view GAME_WS_TCP_BRIDGE_BASE_URL = "";
++
++static std::string gameUrlThroughWsTcpBridge(std::string_view originalUrl) {
++    if (GAME_WS_TCP_BRIDGE_BASE_URL.empty()) {
++        return std::string(originalUrl);
++    }
++
++    static constexpr char hexDigits[] = "0123456789abcdef";
++    std::string targetHex;
++    targetHex.reserve(originalUrl.size() * 2);
++    for (unsigned char byte : originalUrl) {
++        targetHex.push_back(hexDigits[byte >> 4]);
++        targetHex.push_back(hexDigits[byte & 0x0f]);
++    }
++
++    return fmt::format("{}?target_hex={}", GAME_WS_TCP_BRIDGE_BASE_URL, targetHex);
++}
++
+ const char* getIosTeamId();
+@@
+-            auto res = m_gameConn->connect(cur->url);
++            // The main central server still provides the real game-server URL.
++            // Redirect only the transport to the WSS bridge; the target URL
++            // remains selected by Globed and is validated by the bridge.
++            auto bridgeUrl = gameUrlThroughWsTcpBridge(cur->url);
++            auto res = m_gameConn->connect(bridgeUrl);
