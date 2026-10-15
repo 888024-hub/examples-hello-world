@@ -24,11 +24,10 @@ diff --git a/src/core/net/NetworkManagerImpl.cpp b/src/core/net/NetworkManagerIm
 +}
 +
 +
-@@ -906,3 +926,6 @@
-              m_gameConn->setDebugOptions(getConnOpts());
+@@ -906,2 +926,5 @@
+             m_gameConn->setDebugOptions(getConnOpts());
 -            auto res = m_gameConn->connect(cur->url);
 +            // The main central server still supplies the real game-server URL.
 +            // Redirect the transport through WSS, preserving the selected target.
 +            auto bridgeUrl = gameUrlThroughWsTcpBridge(cur->url);
 +            auto res = m_gameConn->connect(bridgeUrl);
-              auto info = this->connInfo();
