@@ -25,7 +25,7 @@ diff --git a/src/core/net/NetworkManagerImpl.cpp b/src/core/net/NetworkManagerIm
 +}
 +
  const char* getIosTeamId();
-@@ -906,4 +926,7 @@
+@@ -905,4 +925,7 @@
              // disconnected, connect to the requested server
              m_gameConn->setDebugOptions(getConnOpts());
 -            auto res = m_gameConn->connect(cur->url);
