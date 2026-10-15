@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Globed WebSocket Bridge</title>
+  <title>Globed Main-Server Bridge</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { margin: 0; background: #111827; color: #e5e7eb; }
@@ -18,21 +18,17 @@
 </head>
 <body>
   <main>
-    <h1>Globed WebSocket bridge</h1>
-    <p>Connects Qunet WebSocket traffic to one configured Globed game-server TCP endpoint.</p>
+    <h1>Globed main-server bridge</h1>
+    <p>Routes a patched Globed client's selected game-server connection through WebSockets and converts Qunet framing for TCP.</p>
     <section>
       <h2>Endpoints</h2>
-      <p><code class="path">GET /healthz</code> — checks whether the required environment variables are configured.</p>
-      <p><code class="path">wss://YOUR-DEPLOY-HOST/ws/YOUR-TOKEN</code> — authenticated binary WebSocket tunnel. Set this as the game server's advertised <code>server_address</code>.</p>
+      <p><code class="path">GET /healthz</code> — checks whether the token, host allowlist, and port allowlist are configured.</p>
+      <p><code class="path">wss://YOUR-DEPLOY-HOST/ws/YOUR-TOKEN?target_hex=...</code> — authenticated binary WebSocket endpoint used by the client patch.</p>
     </section>
     <section>
-      <h2>What it changes</h2>
-      <p>Qunet WebSocket frames contain one message each. Qunet TCP uses a four-byte little-endian length prefix on ordinary messages. The bridge converts these outer framing rules and leaves Qunet message payload bytes unchanged.</p>
-    </section>
-    <section>
-      <h2>Required setup</h2>
-      <p>Configure <code>GLOBED_TCP_HOST</code>, <code>GLOBED_TCP_PORT</code>, and a URL-safe <code>GLOBED_PROXY_TOKEN</code> (at least 24 characters). The actual game server must accept TCP connections, normally on port <code>4349</code>.</p>
-      <p><small>The token appears in the advertised server URL, so treat it as an unlisted endpoint identifier, not a secret from people using the server. This bridge only connects to the one configured backend.</small></p>
+      <h2>Configuration</h2>
+      <p>Set <code>GLOBED_PROXY_TOKEN</code>, <code>GLOBED_ALLOWED_GAME_HOSTS</code>, and <code>GLOBED_ALLOWED_GAME_PORTS</code> in Deno Deploy. The allowed hosts must include the actual gameplay-server addresses announced by the official main server.</p>
+      <p><small>The bridge does not change the official central server. A custom Globed client build is required to route gameplay connections through this endpoint.</small></p>
     </section>
   </main>
 </body>
