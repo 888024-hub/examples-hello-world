@@ -1,10 +1,14 @@
 import { serveFile } from "jsr:@std/http/file-server";
+import {
+  frameWebSocketQunetMessage,
+  MAX_QUNET_FRAME_BYTES,
+  QunetTcpFrameDecoder,
+} from "./framing.ts";
 
 const HOST = Deno.env.get("GLOBED_TCP_HOST")?.trim() ?? "";
 const PORT = Number(Deno.env.get("GLOBED_TCP_PORT") ?? "4349");
 const TOKEN = Deno.env.get("GLOBED_PROXY_TOKEN") ?? "";
 
-const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_WS_BUFFER_BYTES = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT_MS = 8000;
 const MAX_CONNECTIONS = 50;
@@ -35,13 +39,6 @@ async function bytesFromMessage(data: unknown): Promise<Uint8Array> {
   throw new TypeError("Binary WebSocket messages required");
 }
 
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.byteLength + b.byteLength);
-  out.set(a, 0);
-  out.set(b, a.byteLength);
-  return out;
-}
-
 async function writeAll(conn: Deno.Conn, bytes: Uint8Array): Promise<void> {
   let offset = 0;
   while (offset < bytes.byteLength) {
@@ -51,78 +48,6 @@ async function writeAll(conn: Deno.Conn, bytes: Uint8Array): Promise<void> {
   }
 }
 
-/**
- * Qunet WebSocket transport sends one encoded Qunet message per WS frame.
- * Qunet TCP stream transport instead adds a little-endian u32 size prefix
- * to messages other than HandshakeStart (0x05) and ClientReconnect (0x0a).
- */
-function tcpFrameFromWebSocketMessage(message: Uint8Array): Uint8Array {
-  if (message.byteLength === 0) {
-    throw new TypeError("Empty Qunet WebSocket message");
-  }
-
-  const type = message[0];
-  if (type === 0x05 || type === 0x0a) {
-    // Qunet TCP expects these two initial-connection messages without a length prefix.
-    return message;
-  }
-
-  if (message.byteLength > MAX_FRAME_BYTES) {
-    throw new RangeError("Qunet message is too large");
-  }
-
-  const framed = new Uint8Array(4 + message.byteLength);
-  new DataView(framed.buffer).setUint32(0, message.byteLength, true);
-  framed.set(message, 4);
-  return framed;
-}
-
-/**
- * Reads TCP's length-prefixed stream and emits each unprefixed Qunet message
- * as a separate binary WebSocket frame. TCP read boundaries are arbitrary.
- */
-function drainTcpFrames(
-  pending: Uint8Array,
-  socket: WebSocket,
-  isClosed: () => boolean,
-  close: (code: number, reason: string) => void,
-): Uint8Array {
-  while (pending.byteLength >= 4 && !isClosed()) {
-    const length = new DataView(
-      pending.buffer,
-      pending.byteOffset,
-      pending.byteLength,
-    ).getUint32(0, true);
-
-    if (length === 0) {
-      pending = pending.slice(4); // Qunet stream transport ignores zero-length records.
-      continue;
-    }
-
-    if (length > MAX_FRAME_BYTES) {
-      close(1009, "TCP frame too large");
-      return new Uint8Array(0);
-    }
-
-    if (pending.byteLength < 4 + length) break;
-
-    if (socket.readyState !== WebSocket.OPEN) {
-      close(1011, "WebSocket is not open");
-      return new Uint8Array(0);
-    }
-
-    if (socket.bufferedAmount > MAX_WS_BUFFER_BYTES) {
-      close(1013, "Client is too slow");
-      return new Uint8Array(0);
-    }
-
-    socket.send(pending.slice(4, 4 + length));
-    pending = pending.slice(4 + length);
-  }
-
-  return pending;
-}
-
 async function tunnel(req: Request, url: URL): Promise<Response> {
   if (!configured()) {
     return json({
@@ -130,9 +55,9 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
     }, 503);
   }
 
-  // Qunet's WebSocket client supports URL paths but not custom authorization
-  // headers through Globed's current transport setup. The token path allows
-  // that unmodified client to reach this fixed backend.
+  // Qunet's current WebSocket setup passes URL paths but doesn't set a custom
+  // Authorization header. The token path works with that client; a bearer
+  // header is also accepted for clients that can supply one.
   const pathAuthorized = url.pathname === `/ws/${TOKEN}`;
   const headerAuthorized =
     req.headers.get("authorization") === `Bearer ${TOKEN}`;
@@ -200,15 +125,20 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
       }
 
       const message = await bytesFromMessage(event.data);
-      if (message.byteLength > MAX_FRAME_BYTES) {
+      if (message.byteLength > MAX_QUNET_FRAME_BYTES) {
         close(1009, "Message too large");
         return;
       }
 
-      await writeAll(tcp, tcpFrameFromWebSocketMessage(message));
+      // Converts WS message boundaries into Qunet TCP stream framing.
+      await writeAll(tcp, frameWebSocketQunetMessage(message));
     }).catch((error: unknown) => {
       console.warn("WebSocket-to-TCP forwarding failed:", error);
-      close(1011, "TCP write failed");
+      if (error instanceof RangeError) {
+        close(1009, "Message too large");
+      } else {
+        close(1011, "TCP write failed");
+      }
     });
   });
 
@@ -216,7 +146,7 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
   socket.addEventListener("error", () => close(1011, "WebSocket error"));
 
   void (async () => {
-    let pending = new Uint8Array(0);
+    const decoder = new QunetTcpFrameDecoder();
     const buffer = new Uint8Array(16 * 1024);
 
     try {
@@ -228,23 +158,29 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
         }
         if (count === 0) continue;
 
-        pending = concatBytes(pending, buffer.slice(0, count));
-        pending = drainTcpFrames(
-          pending,
-          socket,
-          () => closed,
-          (code, reason) => close(code, reason),
-        );
-
-        if (pending.byteLength > MAX_FRAME_BYTES + 4) {
-          close(1009, "Incomplete TCP frame too large");
-          return;
+        // Parses partial/coalesced TCP reads and removes each length prefix.
+        const messages = decoder.push(buffer.subarray(0, count));
+        for (const message of messages) {
+          if (closed) return;
+          if (socket.readyState !== WebSocket.OPEN) {
+            close(1011, "WebSocket is not open");
+            return;
+          }
+          if (socket.bufferedAmount > MAX_WS_BUFFER_BYTES) {
+            close(1013, "Client is too slow");
+            return;
+          }
+          socket.send(message);
         }
       }
     } catch (error) {
       if (!closed) {
         console.warn("TCP-to-WebSocket forwarding failed:", error);
-        close(1011, "TCP read failed");
+        if (error instanceof RangeError) {
+          close(1009, "TCP frame too large");
+        } else {
+          close(1011, "TCP read failed");
+        }
       }
     } finally {
       if (!closed) close();
