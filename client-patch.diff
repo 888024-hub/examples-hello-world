@@ -1,0 +1,33 @@
+diff --git a/src/core/net/NetworkManagerImpl.cpp b/src/core/net/NetworkManagerImpl.cpp
+--- a/src/core/net/NetworkManagerImpl.cpp
++++ b/src/core/net/NetworkManagerImpl.cpp
+@@ -226,1 +226,21 @@
+ namespace globed {
++// Set this before building your custom client. Leave it empty to disable
++// the bridge and preserve normal direct game-server connections.
++static constexpr std::string_view GAME_WS_TCP_BRIDGE_BASE_URL = "";
++
++static std::string gameUrlThroughWsTcpBridge(std::string_view originalUrl) {
++    if (GAME_WS_TCP_BRIDGE_BASE_URL.empty()) {
++        return std::string(originalUrl);
++    }
++
++    static constexpr char hexDigits[] = "0123456789abcdef";
++    std::string targetHex;
++    targetHex.reserve(originalUrl.size() * 2);
++    for (unsigned char byte : originalUrl) {
++        targetHex.push_back(hexDigits[byte >> 4]);
++        targetHex.push_back(hexDigits[byte & 0x0f]);
++    }
++
++    return fmt::format("{}?target_hex={}", GAME_WS_TCP_BRIDGE_BASE_URL, targetHex);
++}
++
++
+@@ -906,2 +926,5 @@
+             m_gameConn->setDebugOptions(getConnOpts());
+-            auto res = m_gameConn->connect(cur->url);
++            // The main central server still supplies the real game-server URL.
++            // Redirect the transport through WSS, preserving the selected target.
++            auto bridgeUrl = gameUrlThroughWsTcpBridge(cur->url);
++            auto res = m_gameConn->connect(bridgeUrl);

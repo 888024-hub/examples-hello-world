@@ -3,34 +3,33 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Globed WebSocket Bridge</title>
+  <title>Globed Main-Server Bridge</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { margin: 0; background: #111827; color: #e5e7eb; }
     main { box-sizing: border-box; max-width: 760px; margin: 0 auto; padding: 48px 22px; }
     h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.1; margin: 0 0 14px; }
     p { line-height: 1.65; color: #cbd5e1; }
-    code { font-family: ui-monospace, monospace; background: #1f2937; padding: 2px 6px; border-radius: 5px; }
+    code { font-family: ui-monospace, monospace; background: #1f2937; padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
     section { border: 1px solid #374151; background: #172033; border-radius: 14px; padding: 20px; margin-top: 20px; }
     .path { font-size: 1.05rem; color: #93c5fd; }
-    a { color: #93c5fd; }
-    small { color: #9ca3af; }
+    small { color: #9ca3af; line-height: 1.6; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Globed WebSocket bridge</h1>
-    <p>A fixed-destination, authenticated binary WebSocket tunnel to a configured Globed TCP server.</p>
+    <h1>Globed main-server bridge</h1>
+    <p>Routes a patched Globed client's selected game-server connection through WebSockets and converts Qunet framing for TCP.</p>
     <section>
       <h2>Endpoints</h2>
-      <p><code class="path">GET /healthz</code> — reports whether required environment variables are configured.</p>
-      <p><code class="path">GET /ws</code> — upgrades to an authenticated binary WebSocket and relays bytes to the configured TCP backend.</p>
+      <p><code class="path">GET /healthz</code> — checks whether the token, host allowlist, and port allowlist are configured.</p>
+      <p><code class="path">wss://YOUR-DEPLOY-HOST/ws/YOUR-TOKEN?target_hex=...</code> — authenticated binary WebSocket endpoint used by the client patch.</p>
     </section>
     <section>
-      <h2>Important compatibility note</h2>
-      <p>This endpoint does not make the unmodified Globed client use WebSockets for gameplay. A client-side WebSocket transport adapter is required; it must reassemble incoming binary messages into a TCP-like byte stream.</p>
+      <h2>Configuration</h2>
+      <p>Set <code>GLOBED_PROXY_TOKEN</code>, <code>GLOBED_ALLOWED_GAME_HOSTS</code>, and <code>GLOBED_ALLOWED_GAME_PORTS</code> in Deno Deploy. The allowed hosts must include the actual gameplay-server addresses announced by the official main server.</p>
+      <p><small>The bridge does not change the official central server. A custom Globed client build is required to route gameplay connections through this endpoint.</small></p>
     </section>
-    <p><small>Configure <code>GLOBED_TCP_HOST</code>, <code>GLOBED_TCP_PORT</code>, and <code>GLOBED_PROXY_TOKEN</code> in the deployment environment. Never put the token in a URL.</small></p>
   </main>
 </body>
 </html>
