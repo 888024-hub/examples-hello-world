@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --watch --allow-read --allow-net main.ts"
+    "dev": "deno run --watch --allow-read --allow-net --allow-env=GLOBED_TCP_HOST,GLOBED_TCP_PORT,GLOBED_PROXY_TOKEN main.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@1"
