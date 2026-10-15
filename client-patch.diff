@@ -23,7 +23,6 @@ diff --git a/src/core/net/NetworkManagerImpl.cpp b/src/core/net/NetworkManagerIm
 +    return fmt::format("{}?target_hex={}", GAME_WS_TCP_BRIDGE_BASE_URL, targetHex);
 +}
 +
-+
 @@ -906,2 +926,5 @@
              m_gameConn->setDebugOptions(getConnOpts());
 -            auto res = m_gameConn->connect(cur->url);
