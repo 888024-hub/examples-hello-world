@@ -1,80 +1,36 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hello, Deno</title>
-  <link rel="preload" href="https://demo-styles.deno.deno.net/fonts/Moranga-Regular.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="preload" href="https://demo-styles.deno.deno.net/fonts/Moranga-Medium.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="preload" href="https://demo-styles.deno.deno.net/fonts/Recursive_Variable.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="https://demo-styles.deno.deno.net/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Globed WebSocket Bridge</title>
   <style>
-    img {
-      display: inline-block;
-      vertical-align: middle;
-    }
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #111827; color: #e5e7eb; }
+    main { box-sizing: border-box; max-width: 760px; margin: 0 auto; padding: 48px 22px; }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.1; margin: 0 0 14px; }
+    p { line-height: 1.65; color: #cbd5e1; }
+    code { font-family: ui-monospace, monospace; background: #1f2937; padding: 2px 6px; border-radius: 5px; }
+    section { border: 1px solid #374151; background: #172033; border-radius: 14px; padding: 20px; margin-top: 20px; }
+    .path { font-size: 1.05rem; color: #93c5fd; }
+    a { color: #93c5fd; }
+    small { color: #9ca3af; }
   </style>
 </head>
-
 <body>
-    <main>
-      <section>
-        <a href="https://deno.com/deploy">
-        </a>
-      <h1>
-        <p>
-          Hello, Deno!
-        </p>
-      </h1>
-      <p>
-        This little example is being served by <a href="https://deno.com/">Deno</a>.
-        You can run it locally or in porduction on <a href="https://deno.com/deploy">Deno Deploy</a> or other hosting platforms.
-      </p>
-      <ul>
-        <li>Run it locally with<code>deno task dev</code></li>
-        <li>Deploy it to <a href="https://deno.com/deploy">Deno Deploy</a> via the CLI by running<code>deno deploy</code></li>
-        <li>Run it locally and share it publically by running <code>deno deploy --connected</code></li>
-      </ul>
-    </section>
-      <hr>
+  <main>
+    <h1>Globed WebSocket bridge</h1>
+    <p>A fixed-destination, authenticated binary WebSocket tunnel to a configured Globed TCP server.</p>
     <section>
-      <h2>What's next?</h2>
-      <p>
-        You can clone this example and deploy it to Deno Deploy in just a few clicks
-        <a href="https://app.deno.com/new?clone=https://github.com/denoland/examples&path=hello-world"><img src="https://deno.com/button" alt="Deploy on Deno"/></a>
-      </p>
-      <ul>
-        <li>
-          <a href="https://docs.deno.com/examples">More examples in the Deno Docs</a>
-        </li>
-        <li>
-          <a href="https://deno.com/deploy">Deno Deploy Early Access</a>
-        </li>
-      </ul>
+      <h2>Endpoints</h2>
+      <p><code class="path">GET /healthz</code> — reports whether required environment variables are configured.</p>
+      <p><code class="path">GET /ws</code> — upgrades to an authenticated binary WebSocket and relays bytes to the configured TCP backend.</p>
     </section>
-    </main>
-    <hr>
-    <footer>
-      <section>
-      <ul class="flex-btwn">
-        <li>
-          <a href="https://deno.com">BlueSky</a>
-        </li>
-        <li>
-          <a href="https://deno.com">Twitter</a>
-        </li>
-        <li>
-          <a href="https://deno.com">YouTube</a>
-        </li>
-        <li>
-          <a href="https://deno.com">Newsletter</a>
-        </li>
-        <li>
-          <a href="https://deno.com">Deno</a>
-        </li>
-      </ul>
-      </section>
-    </footer>
+    <section>
+      <h2>Important compatibility note</h2>
+      <p>This endpoint does not make the unmodified Globed client use WebSockets for gameplay. A client-side WebSocket transport adapter is required; it must reassemble incoming binary messages into a TCP-like byte stream.</p>
+    </section>
+    <p><small>Configure <code>GLOBED_TCP_HOST</code>, <code>GLOBED_TCP_PORT</code>, and <code>GLOBED_PROXY_TOKEN</code> in the deployment environment. Never put the token in a URL.</small></p>
+  </main>
 </body>
 </html>
