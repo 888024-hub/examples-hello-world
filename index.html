@@ -10,27 +10,30 @@
     main { box-sizing: border-box; max-width: 760px; margin: 0 auto; padding: 48px 22px; }
     h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.1; margin: 0 0 14px; }
     p { line-height: 1.65; color: #cbd5e1; }
-    code { font-family: ui-monospace, monospace; background: #1f2937; padding: 2px 6px; border-radius: 5px; }
+    code { font-family: ui-monospace, monospace; background: #1f2937; padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
     section { border: 1px solid #374151; background: #172033; border-radius: 14px; padding: 20px; margin-top: 20px; }
     .path { font-size: 1.05rem; color: #93c5fd; }
-    a { color: #93c5fd; }
-    small { color: #9ca3af; }
+    small { color: #9ca3af; line-height: 1.6; }
   </style>
 </head>
 <body>
   <main>
     <h1>Globed WebSocket bridge</h1>
-    <p>A fixed-destination, authenticated binary WebSocket tunnel to a configured Globed TCP server.</p>
+    <p>Connects Qunet WebSocket traffic to one configured Globed game-server TCP endpoint.</p>
     <section>
       <h2>Endpoints</h2>
-      <p><code class="path">GET /healthz</code> — reports whether required environment variables are configured.</p>
-      <p><code class="path">GET /ws</code> — upgrades to an authenticated binary WebSocket and relays bytes to the configured TCP backend.</p>
+      <p><code class="path">GET /healthz</code> — checks whether the required environment variables are configured.</p>
+      <p><code class="path">wss://YOUR-DEPLOY-HOST/ws/YOUR-TOKEN</code> — authenticated binary WebSocket tunnel. Set this as the game server's advertised <code>server_address</code>.</p>
     </section>
     <section>
-      <h2>Important compatibility note</h2>
-      <p>This endpoint does not make the unmodified Globed client use WebSockets for gameplay. A client-side WebSocket transport adapter is required; it must reassemble incoming binary messages into a TCP-like byte stream.</p>
+      <h2>What it changes</h2>
+      <p>Qunet WebSocket frames contain one message each. Qunet TCP uses a four-byte little-endian length prefix on ordinary messages. The bridge converts these outer framing rules and leaves Qunet message payload bytes unchanged.</p>
     </section>
-    <p><small>Configure <code>GLOBED_TCP_HOST</code>, <code>GLOBED_TCP_PORT</code>, and <code>GLOBED_PROXY_TOKEN</code> in the deployment environment. Never put the token in a URL.</small></p>
+    <section>
+      <h2>Required setup</h2>
+      <p>Configure <code>GLOBED_TCP_HOST</code>, <code>GLOBED_TCP_PORT</code>, and a URL-safe <code>GLOBED_PROXY_TOKEN</code> (at least 24 characters). The actual game server must accept TCP connections, normally on port <code>4349</code>.</p>
+      <p><small>The token appears in the advertised server URL, so treat it as an unlisted endpoint identifier, not a secret from people using the server. This bridge only connects to the one configured backend.</small></p>
+    </section>
   </main>
 </body>
 </html>
