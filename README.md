@@ -1,45 +1,69 @@
 # Globed WebSocket-to-TCP bridge
 
-This Deno Deploy app exposes an authenticated binary WebSocket endpoint at `/ws`
-and relays its payload bytes to one configured Globed TCP endpoint. It does not
-let clients select a destination host or port.
+This Deno Deploy app exposes an authenticated WebSocket endpoint for a Globed
+**game server** whose TCP transport is enabled. It translates the outer Qunet
+transport framing while preserving the Qunet message payloads.
 
-## Deploy configuration
+## Configure Deno Deploy
 
-Set these environment variables in Deno Deploy:
+Set these environment variables:
 
-- `GLOBED_TCP_HOST`: hostname of the Globed **game server**.
-- `GLOBED_TCP_PORT`: TCP port, normally `4349` when TCP is enabled on the game server.
-- `GLOBED_PROXY_TOKEN`: a long random secret, at least 24 characters.
+- `GLOBED_TCP_HOST`: hostname/IP of the actual Globed game server, reachable from Deno Deploy.
+- `GLOBED_TCP_PORT`: game server TCP port; normally `4349`.
+- `GLOBED_PROXY_TOKEN`: at least 24 URL-safe characters (letters, digits, `-`, `_`).
 
-`/healthz` reports whether these settings are present and valid. It does not
-test connectivity to the backend. WebSocket clients must connect to
-`wss://<your-deployment-host>/ws` and send
-`Authorization: Bearer <GLOBED_PROXY_TOKEN>` during the HTTP upgrade.
+`/healthz` checks the configuration, not backend reachability.
 
-## Wire behavior
+## Configure the game server
 
-The bridge intentionally does **not** add, remove, compress, or interpret packet
-headers. Each incoming binary WebSocket message is written to the TCP socket in
-order. TCP reads are emitted as binary WebSocket messages. Since TCP does not
-preserve read/write boundaries, the WebSocket client adapter must concatenate
-all incoming binary payloads into one byte stream and expose stream-like reads
-to the Globed/Qunet protocol layer.
+Enable TCP in the game server config, commonly:
 
-The bridge is only the server half of the tunnel. The normal, unmodified Globed
-client does not use WebSockets for gameplay connections. A compatible client-side
-transport adapter is required, including the bearer header and byte-stream
-reassembly. This repository does not include or build that native client adapter.
+```toml
+[tcp]
+enable = true
+address = "[::]:4349"
+```
 
-## Limits and security
+Set the game's advertised client-facing address to the deployed WebSocket URL:
 
-- Only the configured backend is reachable; clients cannot supply host/port.
-- Binary messages only, maximum 1 MiB per client message.
-- 50 concurrent connections per running instance.
-- Connection timeout: 8 seconds.
-- A bearer token is required. Keep it secret and do not put it in a URL.
-- This is a raw TCP relay, not a protocol-aware gameplay-event converter.
+```toml
+server_address = "wss://YOUR-DEPLOY-HOST/ws/YOUR-TOKEN"
+```
 
-Test against a Globed game server with TCP enabled. Hosting TCP on port 4349
-is the common default, but the port may be customized in your game-server
-configuration.
+Replace the host and token with your deployment hostname and the exact value of
+`GLOBED_PROXY_TOKEN`. Keep the TCP backend host/port configured separately in
+Deno Deploy. The backend must be reachable from Deploy; `localhost` will refer
+to the Deploy instance, not your game server.
+
+The path token is needed because Globed's current Qunet WebSocket transport
+passes the URL path but does not set a custom Authorization header. The token
+is included in the game's advertised URL, so it is **not secret from people
+allowed to see that server address**; its main purpose is to make the endpoint
+harder to discover. This service always connects to one fixed backend and does
+not accept arbitrary client-supplied hosts or ports.
+
+## How packet conversion works
+
+Qunet WebSocket transport sends one Qunet message per binary WebSocket frame.
+Qunet TCP transport uses a 4-byte little-endian message-length prefix on most
+messages, with special handling for `HandshakeStart` (`0x05`) and
+`ClientReconnect` (`0x0a`). The bridge:
+
+- adds TCP length prefixes to ordinary incoming WebSocket Qunet messages;
+- forwards `HandshakeStart` and `ClientReconnect` without a prefix;
+- parses arbitrary TCP read chunks into complete frames and removes their
+  prefixes before sending one binary WebSocket message per Qunet message;
+- passes the Qunet message bytes themselves unchanged.
+
+It caps messages at 16 MiB, connection attempts at 8 seconds, and active
+connections at 50 per running instance.
+
+## Endpoint and limitations
+
+- WebSocket endpoint: `wss://YOUR-DEPLOY-HOST/ws/YOUR-TOKEN`
+- Health endpoint: `https://YOUR-DEPLOY-HOST/healthz`
+- Only binary Qunet messages are accepted.
+
+This adapts transport framing; it does not decode or alter gameplay events.
+The Globed client build must have Qunet WebSocket support enabled. Test with
+your actual Globed version and server before relying on it in a live session.
