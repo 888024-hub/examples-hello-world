@@ -32,6 +32,20 @@ function configured(): boolean {
     ALLOWED_PORTS.size > 0;
 }
 
+function isAllowedHost(hostname: string): boolean {
+  for (const rule of ALLOWED_HOSTS) {
+    if (rule.startsWith("*.")) {
+      const suffix = rule.slice(1); // ".example.com"
+      if (hostname.endsWith(suffix) && hostname.length > suffix.length) {
+        return true;
+      }
+    } else if (hostname === rule) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
@@ -76,7 +90,7 @@ function parseAllowedTarget(targetHex: string | null): TcpTarget {
   const hostname = target.hostname.toLowerCase().replace(/\.$/, "");
   const port = Number(target.port);
 
-  if (!ALLOWED_HOSTS.has(hostname)) {
+  if (!isAllowedHost(hostname)) {
     throw new TypeError("Game-server host is not allowlisted");
   }
   if (!ALLOWED_PORTS.has(port)) {
