@@ -5,9 +5,19 @@ import {
   QunetTcpFrameDecoder,
 } from "./framing.ts";
 
-const HOST = Deno.env.get("GLOBED_TCP_HOST")?.trim() ?? "";
-const PORT = Number(Deno.env.get("GLOBED_TCP_PORT") ?? "4349");
 const TOKEN = Deno.env.get("GLOBED_PROXY_TOKEN") ?? "";
+const ALLOWED_HOSTS = new Set(
+  (Deno.env.get("GLOBED_ALLOWED_GAME_HOSTS") ?? "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
+    .filter(Boolean),
+);
+const ALLOWED_PORTS = new Set(
+  (Deno.env.get("GLOBED_ALLOWED_GAME_PORTS") ?? "4349")
+    .split(",")
+    .map((port) => Number(port.trim()))
+    .filter((port) => Number.isInteger(port) && port >= 1 && port <= 65535),
+);
 
 const MAX_WS_BUFFER_BYTES = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT_MS = 8000;
@@ -16,16 +26,64 @@ const MAX_CONNECTIONS = 50;
 let activeConnections = 0;
 
 function configured(): boolean {
-  return HOST.length > 0 &&
-    Number.isInteger(PORT) &&
-    PORT >= 1 &&
-    PORT <= 65535 &&
-    TOKEN.length >= 24 &&
-    /^[A-Za-z0-9_-]+$/.test(TOKEN);
+  return TOKEN.length >= 24 &&
+    /^[A-Za-z0-9_-]+$/.test(TOKEN) &&
+    ALLOWED_HOSTS.size > 0 &&
+    ALLOWED_PORTS.size > 0;
 }
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
+}
+
+function decodeHex(value: string): string {
+  if (!value || value.length > 2048 || value.length % 2 !== 0 ||
+      !/^[0-9a-f]+$/i.test(value)) {
+    throw new TypeError("Invalid target_hex");
+  }
+
+  const bytes = new Uint8Array(value.length / 2);
+  for (let i = 0; i < value.length; i += 2) {
+    bytes[i / 2] = Number.parseInt(value.slice(i, i + 2), 16);
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+type TcpTarget = { hostname: string; port: number };
+
+function parseAllowedTarget(targetHex: string | null): TcpTarget {
+  if (!targetHex) throw new TypeError("Missing target_hex");
+
+  const original = decodeHex(targetHex);
+  let target: URL;
+
+  try {
+    // Qunet server listings usually provide protocol://host:port.
+    // Add tcp:// for bare host:port addresses; do not allow a URL path/query.
+    target = new URL(original.includes("://") ? original : `tcp://${original}`);
+  } catch {
+    throw new TypeError("Invalid game-server address");
+  }
+
+  if (!["udp:", "tcp:", "quic:", "qunet:"].includes(target.protocol)) {
+    throw new TypeError("Unsupported game-server URL protocol");
+  }
+  if (target.username || target.password || target.pathname !== "/" ||
+      target.search || target.hash || !target.port) {
+    throw new TypeError("Expected a simple host:port game-server address");
+  }
+
+  const hostname = target.hostname.toLowerCase().replace(/\.$/, "");
+  const port = Number(target.port);
+
+  if (!ALLOWED_HOSTS.has(hostname)) {
+    throw new TypeError("Game-server host is not allowlisted");
+  }
+  if (!ALLOWED_PORTS.has(port)) {
+    throw new TypeError("Game-server TCP port is not allowlisted");
+  }
+
+  return { hostname, port };
 }
 
 async function bytesFromMessage(data: unknown): Promise<Uint8Array> {
@@ -51,18 +109,13 @@ async function writeAll(conn: Deno.Conn, bytes: Uint8Array): Promise<void> {
 async function tunnel(req: Request, url: URL): Promise<Response> {
   if (!configured()) {
     return json({
-      error: "Configure GLOBED_TCP_HOST, GLOBED_TCP_PORT and a URL-safe GLOBED_PROXY_TOKEN of at least 24 characters.",
+      error: "Configure GLOBED_PROXY_TOKEN, GLOBED_ALLOWED_GAME_HOSTS and GLOBED_ALLOWED_GAME_PORTS.",
     }, 503);
   }
 
-  // Qunet's current WebSocket setup passes URL paths but doesn't set a custom
-  // Authorization header. The token path works with that client; a bearer
-  // header is also accepted for clients that can supply one.
-  const pathAuthorized = url.pathname === `/ws/${TOKEN}`;
-  const headerAuthorized =
-    req.headers.get("authorization") === `Bearer ${TOKEN}`;
-
-  if (!pathAuthorized && !headerAuthorized) {
+  // Qunet's WebSocket client carries the URL path but does not currently
+  // attach a custom Authorization header from Globed's game transport.
+  if (url.pathname !== `/ws/${TOKEN}`) {
     return json({ error: "Unauthorized" }, 401);
   }
 
@@ -73,6 +126,13 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
     });
   }
 
+  let target: TcpTarget;
+  try {
+    target = parseAllowedTarget(url.searchParams.get("target_hex"));
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Invalid target" }, 400);
+  }
+
   if (activeConnections >= MAX_CONNECTIONS) {
     return json({ error: "Bridge is at capacity" }, 503);
   }
@@ -80,14 +140,14 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
   let tcp: Deno.Conn;
   try {
     tcp = await Deno.connect({
-      hostname: HOST,
-      port: PORT,
+      hostname: target.hostname,
+      port: target.port,
       transport: "tcp",
       signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
     });
   } catch (error) {
-    console.error("Could not connect to configured Globed TCP endpoint:", error);
-    return json({ error: "Could not connect to the configured Globed TCP server" }, 502);
+    console.error("Could not connect to allowlisted Globed TCP endpoint:", error);
+    return json({ error: "Could not connect to the configured Globed game server" }, 502);
   }
 
   const { socket, response } = Deno.upgradeWebSocket(req);
@@ -130,15 +190,12 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
         return;
       }
 
-      // Converts WS message boundaries into Qunet TCP stream framing.
+      // Maps one Qunet WS message into the TCP stream wire format.
       await writeAll(tcp, frameWebSocketQunetMessage(message));
     }).catch((error: unknown) => {
       console.warn("WebSocket-to-TCP forwarding failed:", error);
-      if (error instanceof RangeError) {
-        close(1009, "Message too large");
-      } else {
-        close(1011, "TCP write failed");
-      }
+      if (error instanceof RangeError) close(1009, "Message too large");
+      else close(1011, "TCP write failed");
     });
   });
 
@@ -158,9 +215,7 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
         }
         if (count === 0) continue;
 
-        // Parses partial/coalesced TCP reads and removes each length prefix.
-        const messages = decoder.push(buffer.subarray(0, count));
-        for (const message of messages) {
+        for (const message of decoder.push(buffer.subarray(0, count))) {
           if (closed) return;
           if (socket.readyState !== WebSocket.OPEN) {
             close(1011, "WebSocket is not open");
@@ -176,11 +231,8 @@ async function tunnel(req: Request, url: URL): Promise<Response> {
     } catch (error) {
       if (!closed) {
         console.warn("TCP-to-WebSocket forwarding failed:", error);
-        if (error instanceof RangeError) {
-          close(1009, "TCP frame too large");
-        } else {
-          close(1011, "TCP read failed");
-        }
+        if (error instanceof RangeError) close(1009, "TCP frame too large");
+        else close(1011, "TCP read failed");
       }
     } finally {
       if (!closed) close();
@@ -198,7 +250,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json({ ok, service: "globed-ws-tcp-bridge" }, ok ? 200 : 503);
   }
 
-  if (url.pathname === "/ws" || url.pathname.startsWith("/ws/")) {
+  if (url.pathname.startsWith("/ws")) {
     if (req.method !== "GET") {
       return new Response("Method not allowed", {
         status: 405,
