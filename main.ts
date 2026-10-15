@@ -3,19 +3,21 @@ import { serveFile } from "jsr:@std/http/file-server";
 const HOST = Deno.env.get("GLOBED_TCP_HOST")?.trim() ?? "";
 const PORT = Number(Deno.env.get("GLOBED_TCP_PORT") ?? "4349");
 const TOKEN = Deno.env.get("GLOBED_PROXY_TOKEN") ?? "";
-const MAX_CLIENT_MESSAGE_BYTES = 1024 * 1024;
+
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_WS_BUFFER_BYTES = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT_MS = 8000;
+const MAX_CONNECTIONS = 50;
 
 let activeConnections = 0;
-const MAX_CONNECTIONS = 50;
 
 function configured(): boolean {
   return HOST.length > 0 &&
     Number.isInteger(PORT) &&
     PORT >= 1 &&
     PORT <= 65535 &&
-    TOKEN.length >= 24;
+    TOKEN.length >= 24 &&
+    /^[A-Za-z0-9_-]+$/.test(TOKEN);
 }
 
 function json(body: unknown, status = 200): Response {
@@ -33,6 +35,13 @@ async function bytesFromMessage(data: unknown): Promise<Uint8Array> {
   throw new TypeError("Binary WebSocket messages required");
 }
 
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.byteLength + b.byteLength);
+  out.set(a, 0);
+  out.set(b, a.byteLength);
+  return out;
+}
+
 async function writeAll(conn: Deno.Conn, bytes: Uint8Array): Promise<void> {
   let offset = 0;
   while (offset < bytes.byteLength) {
@@ -42,14 +51,93 @@ async function writeAll(conn: Deno.Conn, bytes: Uint8Array): Promise<void> {
   }
 }
 
-async function tunnel(req: Request): Promise<Response> {
+/**
+ * Qunet WebSocket transport sends one encoded Qunet message per WS frame.
+ * Qunet TCP stream transport instead adds a little-endian u32 size prefix
+ * to messages other than HandshakeStart (0x05) and ClientReconnect (0x0a).
+ */
+function tcpFrameFromWebSocketMessage(message: Uint8Array): Uint8Array {
+  if (message.byteLength === 0) {
+    throw new TypeError("Empty Qunet WebSocket message");
+  }
+
+  const type = message[0];
+  if (type === 0x05 || type === 0x0a) {
+    // Qunet TCP expects these two initial-connection messages without a length prefix.
+    return message;
+  }
+
+  if (message.byteLength > MAX_FRAME_BYTES) {
+    throw new RangeError("Qunet message is too large");
+  }
+
+  const framed = new Uint8Array(4 + message.byteLength);
+  new DataView(framed.buffer).setUint32(0, message.byteLength, true);
+  framed.set(message, 4);
+  return framed;
+}
+
+/**
+ * Reads TCP's length-prefixed stream and emits each unprefixed Qunet message
+ * as a separate binary WebSocket frame. TCP read boundaries are arbitrary.
+ */
+function drainTcpFrames(
+  pending: Uint8Array,
+  socket: WebSocket,
+  isClosed: () => boolean,
+  close: (code: number, reason: string) => void,
+): Uint8Array {
+  while (pending.byteLength >= 4 && !isClosed()) {
+    const length = new DataView(
+      pending.buffer,
+      pending.byteOffset,
+      pending.byteLength,
+    ).getUint32(0, true);
+
+    if (length === 0) {
+      pending = pending.slice(4); // Qunet stream transport ignores zero-length records.
+      continue;
+    }
+
+    if (length > MAX_FRAME_BYTES) {
+      close(1009, "TCP frame too large");
+      return new Uint8Array(0);
+    }
+
+    if (pending.byteLength < 4 + length) break;
+
+    if (socket.readyState !== WebSocket.OPEN) {
+      close(1011, "WebSocket is not open");
+      return new Uint8Array(0);
+    }
+
+    if (socket.bufferedAmount > MAX_WS_BUFFER_BYTES) {
+      close(1013, "Client is too slow");
+      return new Uint8Array(0);
+    }
+
+    socket.send(pending.slice(4, 4 + length));
+    pending = pending.slice(4 + length);
+  }
+
+  return pending;
+}
+
+async function tunnel(req: Request, url: URL): Promise<Response> {
   if (!configured()) {
     return json({
-      error: "Configure GLOBED_TCP_HOST, GLOBED_TCP_PORT and a GLOBED_PROXY_TOKEN of at least 24 characters.",
+      error: "Configure GLOBED_TCP_HOST, GLOBED_TCP_PORT and a URL-safe GLOBED_PROXY_TOKEN of at least 24 characters.",
     }, 503);
   }
 
-  if (req.headers.get("authorization") !== `Bearer ${TOKEN}`) {
+  // Qunet's WebSocket client supports URL paths but not custom authorization
+  // headers through Globed's current transport setup. The token path allows
+  // that unmodified client to reach this fixed backend.
+  const pathAuthorized = url.pathname === `/ws/${TOKEN}`;
+  const headerAuthorized =
+    req.headers.get("authorization") === `Bearer ${TOKEN}`;
+
+  if (!pathAuthorized && !headerAuthorized) {
     return json({ error: "Unauthorized" }, 401);
   }
 
@@ -111,13 +199,13 @@ async function tunnel(req: Request): Promise<Response> {
         return;
       }
 
-      const bytes = await bytesFromMessage(event.data);
-      if (bytes.byteLength > MAX_CLIENT_MESSAGE_BYTES) {
+      const message = await bytesFromMessage(event.data);
+      if (message.byteLength > MAX_FRAME_BYTES) {
         close(1009, "Message too large");
         return;
       }
 
-      await writeAll(tcp, bytes);
+      await writeAll(tcp, tcpFrameFromWebSocketMessage(message));
     }).catch((error: unknown) => {
       console.warn("WebSocket-to-TCP forwarding failed:", error);
       close(1011, "TCP write failed");
@@ -128,7 +216,9 @@ async function tunnel(req: Request): Promise<Response> {
   socket.addEventListener("error", () => close(1011, "WebSocket error"));
 
   void (async () => {
+    let pending = new Uint8Array(0);
     const buffer = new Uint8Array(16 * 1024);
+
     try {
       while (!closed) {
         const count = await tcp.read(buffer);
@@ -138,18 +228,18 @@ async function tunnel(req: Request): Promise<Response> {
         }
         if (count === 0) continue;
 
-        if (socket.readyState !== WebSocket.OPEN) {
-          close(1000, "WebSocket is not open");
-          return;
-        }
-        if (socket.bufferedAmount > MAX_WS_BUFFER_BYTES) {
-          close(1013, "Client is too slow");
-          return;
-        }
+        pending = concatBytes(pending, buffer.slice(0, count));
+        pending = drainTcpFrames(
+          pending,
+          socket,
+          () => closed,
+          (code, reason) => close(code, reason),
+        );
 
-        // Keep payload bytes unchanged. TCP read boundaries are arbitrary,
-        // so the WebSocket client must concatenate binary messages as a stream.
-        socket.send(buffer.slice(0, count));
+        if (pending.byteLength > MAX_FRAME_BYTES + 4) {
+          close(1009, "Incomplete TCP frame too large");
+          return;
+        }
       }
     } catch (error) {
       if (!closed) {
@@ -172,14 +262,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json({ ok, service: "globed-ws-tcp-bridge" }, ok ? 200 : 503);
   }
 
-  if (url.pathname === "/ws") {
+  if (url.pathname === "/ws" || url.pathname.startsWith("/ws/")) {
     if (req.method !== "GET") {
       return new Response("Method not allowed", {
         status: 405,
         headers: { allow: "GET" },
       });
     }
-    return await tunnel(req);
+    return await tunnel(req, url);
   }
 
   if (url.pathname !== "/" && url.pathname !== "/index.html") {
