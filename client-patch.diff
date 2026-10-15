@@ -1,8 +1,9 @@
 diff --git a/src/core/net/NetworkManagerImpl.cpp b/src/core/net/NetworkManagerImpl.cpp
 --- a/src/core/net/NetworkManagerImpl.cpp
 +++ b/src/core/net/NetworkManagerImpl.cpp
-@@ -226,1 +226,21 @@
+@@ -226,3 +226,23 @@
  namespace globed {
+ 
 +// Set this before building your custom client. Leave it empty to disable
 +// the bridge and preserve normal direct game-server connections.
 +static constexpr std::string_view GAME_WS_TCP_BRIDGE_BASE_URL = "";
@@ -23,10 +24,13 @@ diff --git a/src/core/net/NetworkManagerImpl.cpp b/src/core/net/NetworkManagerIm
 +    return fmt::format("{}?target_hex={}", GAME_WS_TCP_BRIDGE_BASE_URL, targetHex);
 +}
 +
-@@ -906,2 +926,5 @@
+ const char* getIosTeamId();
+@@ -906,4 +926,8 @@
+             // disconnected, connect to the requested server
              m_gameConn->setDebugOptions(getConnOpts());
 -            auto res = m_gameConn->connect(cur->url);
 +            // The main central server still supplies the real game-server URL.
 +            // Redirect the transport through WSS, preserving the selected target.
 +            auto bridgeUrl = gameUrlThroughWsTcpBridge(cur->url);
 +            auto res = m_gameConn->connect(bridgeUrl);
+             auto info = this->connInfo();
